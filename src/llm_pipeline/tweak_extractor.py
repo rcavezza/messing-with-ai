@@ -14,6 +14,13 @@ from loguru import logger
 from openai import OpenAI
 from pydantic import ValidationError
 
+from .constants import (
+    DEFAULT_LLM_MODEL,
+    LLM_TEMPERATURE,
+    LLM_MAX_TOKENS,
+    LLM_MAX_RETRIES,
+    REVIEW_TEXT_PREVIEW_LENGTH,
+)
 from .models import ModificationObject, Recipe, Review
 from .prompts import build_simple_prompt
 
@@ -21,7 +28,7 @@ from .prompts import build_simple_prompt
 class TweakExtractor:
     """Extracts structured modifications from review text using LLM processing."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: Optional[str] = None, model: str = DEFAULT_LLM_MODEL):
         """
         Initialize the TweakExtractor.
 
@@ -37,7 +44,7 @@ class TweakExtractor:
         self,
         review: Review,
         recipe: Recipe,
-        max_retries: int = 2,
+        max_retries: int = LLM_MAX_RETRIES,
     ) -> Optional[ModificationObject]:
         """
         Extract a structured modification from a review.
@@ -60,7 +67,9 @@ class TweakExtractor:
         )
 
         logger.debug(
-            "Extracting modification from review: {}...".format(review.text[:100])
+            "Extracting modification from review: {}...".format(
+                review.text[:REVIEW_TEXT_PREVIEW_LENGTH]
+            )
         )
 
         for attempt in range(max_retries + 1):
@@ -69,8 +78,8 @@ class TweakExtractor:
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
-                    temperature=0.1,  # Low temperature for consistent extractions
-                    max_tokens=1000,
+                    temperature=LLM_TEMPERATURE,
+                    max_tokens=LLM_MAX_TOKENS,
                 )
 
                 raw_output = response.choices[0].message.content
@@ -134,7 +143,9 @@ class TweakExtractor:
 
         # Select one random review
         selected_review = random.choice(modification_reviews)
-        logger.info(f"Selected review: {selected_review.text[:100]}...")
+        logger.info(
+            f"Selected review: {selected_review.text[:REVIEW_TEXT_PREVIEW_LENGTH]}..."
+        )
 
         modification = self.extract_modification(selected_review, recipe)
         if modification:
@@ -143,6 +154,50 @@ class TweakExtractor:
         else:
             logger.warning("Failed to extract modification from selected review")
             return None, None
+
+    def extract_all_modifications(
+        self, reviews: list[Review], recipe: Recipe
+    ) -> list[tuple[ModificationObject, Review]]:
+        """
+        Extract modifications from ALL reviews with modifications.
+
+        Args:
+            reviews: List of reviews to process
+            recipe: Original recipe being modified
+
+        Returns:
+            List of tuples (ModificationObject, source_Review) for successfully extracted modifications
+        """
+        # Filter to reviews with modifications
+        modification_reviews = [r for r in reviews if r.has_modification]
+
+        if not modification_reviews:
+            logger.warning("No reviews with modifications found")
+            return []
+
+        logger.info(
+            f"Extracting modifications from {len(modification_reviews)} reviews with modifications"
+        )
+
+        extracted_modifications = []
+        for i, review in enumerate(modification_reviews, 1):
+            logger.info(
+                f"Processing review {i}/{len(modification_reviews)}: {review.text[:REVIEW_TEXT_PREVIEW_LENGTH]}..."
+            )
+
+            modification = self.extract_modification(review, recipe)
+            if modification:
+                extracted_modifications.append((modification, review))
+                logger.info(
+                    f"✓ Successfully extracted {modification.modification_type} modification"
+                )
+            else:
+                logger.warning(f"✗ Failed to extract modification from review {i}")
+
+        logger.info(
+            f"Successfully extracted {len(extracted_modifications)}/{len(modification_reviews)} modifications"
+        )
+        return extracted_modifications
 
     def test_extraction(
         self, review_text: str, recipe_data: dict

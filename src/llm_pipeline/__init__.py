@@ -21,6 +21,12 @@ from .tweak_extractor import TweakExtractor
 from .recipe_modifier import RecipeModifier
 from .enhanced_recipe_generator import EnhancedRecipeGenerator
 from .pipeline import LLMAnalysisPipeline
+from .paths import (
+    get_recipe_file_path,
+    get_data_directory,
+    get_enhanced_directory,
+    find_all_recipe_files,
+)
 
 __all__ = [
     "ModificationEdit",
@@ -32,4 +38,8 @@ __all__ = [
     "RecipeModifier",
     "EnhancedRecipeGenerator",
     "LLMAnalysisPipeline",
+    "get_recipe_file_path",
+    "get_data_directory",
+    "get_enhanced_directory",
+    "find_all_recipe_files",
 ]

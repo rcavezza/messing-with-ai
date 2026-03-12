@@ -16,6 +16,11 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from loguru import logger
 
+from .constants import (
+    LOG_SEPARATOR_LENGTH,
+    RECIPE_TITLE_MAX_LENGTH,
+    JSON_INDENT_LEVEL,
+)
 from .enhanced_recipe_generator import EnhancedRecipeGenerator
 from .models import EnhancedRecipe, Recipe, Review
 from .recipe_modifier import RecipeModifier
@@ -28,7 +33,7 @@ class LLMAnalysisPipeline:
     def __init__(
         self,
         openai_api_key: Optional[str] = None,
-        output_dir: str = "data/enhanced",
+        output_dir: Optional[str] = None,
         pipeline_version: str = "1.0.0",
     ):
         """
@@ -36,13 +41,18 @@ class LLMAnalysisPipeline:
 
         Args:
             openai_api_key: OpenAI API key (loads from env if not provided)
-            output_dir: Directory to save enhanced recipes
+            output_dir: Directory to save enhanced recipes (defaults to project_root/data/enhanced)
             pipeline_version: Version identifier for tracking
         """
         # Load environment variables
         load_dotenv()
 
-        self.output_dir = Path(output_dir)
+        # Use default output directory if not specified
+        if output_dir is None:
+            from .paths import get_enhanced_directory
+            output_dir = str(get_enhanced_directory())
+
+        self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize pipeline components
@@ -114,7 +124,10 @@ class LLMAnalysisPipeline:
         return reviews
 
     def process_single_recipe(
-        self, recipe_file: str, save_output: bool = True
+        self,
+        recipe_file: str,
+        save_output: bool = True,
+        process_all_reviews: bool = False,
     ) -> Optional[EnhancedRecipe]:
         """
         Process a single recipe through the complete pipeline.
@@ -122,6 +135,8 @@ class LLMAnalysisPipeline:
         Args:
             recipe_file: Path to recipe JSON file
             save_output: Whether to save the enhanced recipe
+            process_all_reviews: If True, process all reviews with modifications;
+                                 if False, process one random review (default)
 
         Returns:
             EnhancedRecipe if successful, None otherwise
@@ -135,56 +150,19 @@ class LLMAnalysisPipeline:
             reviews = self.parse_reviews_data(recipe_data)
 
             logger.info(f"Loaded recipe: {recipe.title}")
+            modification_reviews_count = len([r for r in reviews if r.has_modification])
             logger.info(
-                f"Found {len(reviews)} reviews, {len([r for r in reviews if r.has_modification])} with modifications"
+                f"Found {len(reviews)} reviews, {modification_reviews_count} with modifications"
             )
 
             if not any(r.has_modification for r in reviews):
                 logger.warning("No reviews with modifications found")
                 return None
 
-            # Step 1: Extract modification from one random review
-            logger.info("Step 1: Extracting modification from a single review...")
-            modification, source_review = (
-                self.tweak_extractor.extract_single_modification(reviews, recipe)
-            )
-
-            if not modification or not source_review:
-                logger.warning("No modification could be extracted")
-                return None
-
-            logger.info(
-                f"Successfully extracted {modification.modification_type} modification"
-            )
-
-            # Step 2: Apply modification to recipe
-            logger.info("Step 2: Applying modification to recipe...")
-            modified_recipe, change_records = self.recipe_modifier.apply_modification(
-                recipe, modification
-            )
-
-            logger.info(
-                f"Applied modification: {len(change_records)} total changes made"
-            )
-
-            # Step 3: Generate enhanced recipe with attribution
-            logger.info("Step 3: Generating enhanced recipe with attribution...")
-
-            enhanced_recipe = self.enhanced_generator.generate_enhanced_recipe(
-                recipe, modified_recipe, modification, source_review, change_records
-            )
-
-            logger.info(f"Generated enhanced recipe: {enhanced_recipe.title}")
-
-            # Save output
-            if save_output:
-                output_filename = f"enhanced_{recipe.recipe_id}_{recipe.title.lower().replace(' ', '-')[:30]}.json"
-                output_path = self.output_dir / output_filename
-                self.enhanced_generator.save_enhanced_recipe(
-                    enhanced_recipe, str(output_path)
-                )
-
-            return enhanced_recipe
+            if process_all_reviews:
+                return self._process_all_reviews(recipe, reviews)
+            else:
+                return self._process_single_review(recipe, reviews, save_output)
 
         except Exception as e:
             logger.error(f"Failed to process recipe {recipe_file}: {e}")
@@ -193,24 +171,140 @@ class LLMAnalysisPipeline:
             traceback.print_exc()
             return None
 
-    def process_recipe_directory(self, data_dir: str = "data") -> List[EnhancedRecipe]:
+    def _process_single_review(
+        self, recipe: Recipe, reviews: List[Review], save_output: bool
+    ) -> Optional[EnhancedRecipe]:
+        """
+        Process recipe with a single randomly selected review.
+
+        Args:
+            recipe: Parsed recipe object
+            reviews: List of reviews
+            save_output: Whether to save the enhanced recipe
+
+        Returns:
+            EnhancedRecipe if successful, None otherwise
+        """
+        # Step 1: Extract modification from one random review
+        logger.info("Step 1: Extracting modification from a single review...")
+        modification, source_review = (
+            self.tweak_extractor.extract_single_modification(reviews, recipe)
+        )
+
+        if not modification or not source_review:
+            logger.warning("No modification could be extracted")
+            return None
+
+        logger.info(
+            f"Successfully extracted {modification.modification_type} modification"
+        )
+
+        # Step 2: Apply modification to recipe
+        logger.info("Step 2: Applying modification to recipe...")
+        modified_recipe, change_records = self.recipe_modifier.apply_modification(
+            recipe, modification
+        )
+
+        logger.info(
+            f"Applied modification: {len(change_records)} total changes made"
+        )
+
+        # Step 3: Generate enhanced recipe with attribution
+        logger.info("Step 3: Generating enhanced recipe with attribution...")
+
+        enhanced_recipe = self.enhanced_generator.generate_enhanced_recipe(
+            recipe, modified_recipe, modification, source_review, change_records
+        )
+
+        logger.info(f"Generated enhanced recipe: {enhanced_recipe.title}")
+
+        # Save output
+        if save_output:
+            output_filename = f"enhanced_{recipe.recipe_id}_{recipe.title.lower().replace(' ', '-')[:RECIPE_TITLE_MAX_LENGTH]}.json"
+            output_path = self.output_dir / output_filename
+            self.enhanced_generator.save_enhanced_recipe(
+                enhanced_recipe, str(output_path)
+            )
+
+        return enhanced_recipe
+
+    def _process_all_reviews(
+        self, recipe: Recipe, reviews: List[Review]
+    ) -> Optional[EnhancedRecipe]:
+        """
+        Process recipe with ALL reviews that have modifications.
+
+        Args:
+            recipe: Parsed recipe object
+            reviews: List of reviews
+
+        Returns:
+            EnhancedRecipe with all modifications applied, None if no modifications extracted
+        """
+        # Step 1: Extract modifications from ALL reviews
+        logger.info("Step 1: Extracting modifications from ALL reviews...")
+        extracted_modifications = self.tweak_extractor.extract_all_modifications(
+            reviews, recipe
+        )
+
+        if not extracted_modifications:
+            logger.warning("No modifications could be extracted from any review")
+            return None
+
+        logger.info(
+            f"Successfully extracted {len(extracted_modifications)} modifications"
+        )
+
+        # Step 2: Apply all modifications sequentially
+        logger.info("Step 2: Applying all modifications sequentially...")
+
+        modifications = [mod for mod, _ in extracted_modifications]
+        modified_recipe, all_change_records = self.recipe_modifier.apply_modifications_batch(
+            recipe, modifications
+        )
+
+        total_changes = sum(len(records) for records in all_change_records)
+        logger.info(f"Applied all modifications: {total_changes} total changes made")
+
+        # Step 3: Generate enhanced recipe with all attributions
+        logger.info("Step 3: Generating enhanced recipe with all attributions...")
+
+        enhanced_recipe = self.enhanced_generator.generate_enhanced_recipe_with_all_modifications(
+            recipe, modified_recipe, extracted_modifications, all_change_records
+        )
+
+        logger.info(f"Generated enhanced recipe: {enhanced_recipe.title}")
+
+        # Save output
+        output_filename = f"enhanced_{recipe.recipe_id}_{recipe.title.lower().replace(' ', '-')[:RECIPE_TITLE_MAX_LENGTH]}.json"
+        output_path = self.output_dir / output_filename
+        self.enhanced_generator.save_enhanced_recipe(enhanced_recipe, str(output_path))
+
+        return enhanced_recipe
+
+    def process_recipe_directory(self, data_dir: Optional[str] = None) -> List[EnhancedRecipe]:
         """
         Process all recipe files in a directory.
 
         Args:
-            data_dir: Directory containing recipe JSON files
+            data_dir: Directory containing recipe JSON files (defaults to project_root/data)
 
         Returns:
             List of successfully processed EnhancedRecipe objects
         """
-        data_path = Path(data_dir)
+        if data_dir is None:
+            from .paths import get_data_directory
+            data_path = get_data_directory()
+        else:
+            data_path = Path(data_dir).resolve()
+        
         recipe_files = list(data_path.glob("recipe_*.json"))
 
         logger.info(f"Found {len(recipe_files)} recipe files to process")
 
         enhanced_recipes = []
         for recipe_file in recipe_files:
-            logger.info(f"\n{'=' * 60}")
+            logger.info(f"\n{'=' * LOG_SEPARATOR_LENGTH}")
             enhanced_recipe = self.process_single_recipe(str(recipe_file))
 
             if enhanced_recipe:
@@ -219,7 +313,7 @@ class LLMAnalysisPipeline:
             else:
                 logger.warning(f"✗ Failed to process: {recipe_file.name}")
 
-        logger.info(f"\n{'=' * 60}")
+        logger.info(f"\n{'=' * LOG_SEPARATOR_LENGTH}")
         logger.info(
             f"Pipeline complete: {len(enhanced_recipes)}/{len(recipe_files)} recipes successfully enhanced"
         )
@@ -295,7 +389,7 @@ class LLMAnalysisPipeline:
         report = self.generate_summary_report(enhanced_recipes)
 
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, indent=2, ensure_ascii=False)
+            json.dump(report, f, indent=JSON_INDENT_LEVEL, ensure_ascii=False)
 
         logger.info(f"Saved pipeline summary report to: {output_path}")
         return output_path

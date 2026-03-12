@@ -6,6 +6,15 @@ from typing import Any, Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
+# Constants for scraping configuration
+MAX_PHOTO_DIALOG_ITEMS = 10
+MAX_REVIEW_SELECTOR_RESULTS = 50
+MAX_REVIEWS_TO_PROCESS = 30
+MAX_TITLE_SLUG_LENGTH = 50
+JSON_INDENT_LEVEL = 2
+DEFAULT_SITEMAP_LIMIT = 5
+LOG_SEPARATOR_LENGTH = 60
+
 
 def extract_review_data(review_elem) -> Dict:
     """Extract review/tweak data from a review element"""
@@ -75,19 +84,48 @@ def extract_review_data(review_elem) -> Dict:
 
     # Look for modifications/tweaks in review text
     if review_data.get("text"):
-        # Common patterns for recipe modifications
-        tweak_patterns = [
-            r"I (added|used|substituted|replaced|made with|changed)",
-            r"(instead of|rather than|in place of)",
-            r"(next time|will make again|definitely make)",
-            r"(doubled|tripled|halved|increased|decreased)",
-            r"(more|less|extra) ([\w\s]+)",
+        review_text = review_data["text"]
+        
+        # First check for negative indicators that suggest a modification was a mistake
+        negative_indicators = [
+            r"mistakenly",
+            r"was a mistake",
+            r"didn't work",
+            r"didn't turn out",
+            r"wasn't good",
+            r"won't do that",
+            r"wouldn't recommend",
+            r"next time.*correct",
+            r"next time.*original",
+            r"next time.*recipe as written",
+            r"use.*correct ingredients",
+            r"stick to.*original",
+            r"follow.*recipe",
         ]
+        
+        has_negative_sentiment = any(
+            re.search(pattern, review_text, re.IGNORECASE)
+            for pattern in negative_indicators
+        )
+        
+        # If review has negative sentiment, don't flag as modification
+        if has_negative_sentiment:
+            review_data["has_modification"] = False
+            review_data["is_negative_example"] = True
+        else:
+            # Common patterns for recipe modifications
+            tweak_patterns = [
+                r"I (added|used|substituted|replaced|made with|changed)",
+                r"(instead of|rather than|in place of)",
+                r"(next time|will make again|definitely make)",
+                r"(doubled|tripled|halved|increased|decreased)",
+                r"(more|less|extra) ([\w\s]+)",
+            ]
 
-        for pattern in tweak_patterns:
-            if re.search(pattern, review_data["text"], re.IGNORECASE):
-                review_data["has_modification"] = True
-                break
+            for pattern in tweak_patterns:
+                if re.search(pattern, review_text, re.IGNORECASE):
+                    review_data["has_modification"] = True
+                    break
 
     return review_data
 
@@ -154,10 +192,28 @@ def scrape_allrecipes(url: str) -> Optional[Dict]:
         # Look for JSON-LD structured data
         json_ld_scripts = soup.find_all("script", type="application/ld+json")
         recipe_found = None
+        reviews_from_json_ld = []
 
         for json_ld in json_ld_scripts:
             try:
                 structured_data = json.loads(json_ld.string)
+                
+                # Check for reviews in JSON-LD
+                if isinstance(structured_data, dict):
+                    if "review" in structured_data:
+                        reviews_from_json_ld.extend(
+                            structured_data["review"] if isinstance(structured_data["review"], list) 
+                            else [structured_data["review"]]
+                        )
+                elif isinstance(structured_data, list):
+                    for item in structured_data:
+                        if isinstance(item, dict):
+                            if "review" in item:
+                                reviews_from_json_ld.extend(
+                                    item["review"] if isinstance(item["review"], list)
+                                    else [item["review"]]
+                                )
+                
                 recipe_found = extract_recipe_from_json_ld(structured_data)
                 if recipe_found:
                     break
@@ -243,7 +299,7 @@ def scrape_allrecipes(url: str) -> Optional[Dict]:
 
         if photo_dialog_items:
             potential_tweaks = []
-            for item in photo_dialog_items[:10]:  # Check top 10 items
+            for item in photo_dialog_items[:MAX_PHOTO_DIALOG_ITEMS]:
                 # Extract review from within the photo dialog item
                 review_section = item.find("div", {"class": "ugc-review"})
                 if review_section:
@@ -279,8 +335,8 @@ def scrape_allrecipes(url: str) -> Optional[Dict]:
         reviews_found = []
         for tag, attrs in review_selectors:
             reviews_found = soup.find_all(
-                tag, attrs, limit=50
-            )  # Limit to 50 for performance
+                tag, attrs, limit=MAX_REVIEW_SELECTOR_RESULTS
+            )
             if reviews_found:
                 print(
                     f"Found {len(reviews_found)} reviews using selector: {tag} {attrs}"
@@ -288,12 +344,77 @@ def scrape_allrecipes(url: str) -> Optional[Dict]:
                 break
 
         # Parse reviews using the helper function
-        for review_elem in reviews_found[:30]:  # Get up to 30 reviews
+        for review_elem in reviews_found[:MAX_REVIEWS_TO_PROCESS]:
             review_data = extract_review_data(review_elem)
             if review_data and review_data.get("text"):
                 recipe_data["reviews"].append(review_data)
 
-        print(f"Extracted {len(recipe_data['reviews'])} reviews")
+        # Also extract reviews from JSON-LD structured data
+        for json_review in reviews_from_json_ld:
+            if isinstance(json_review, dict):
+                review_data = {
+                    "text": json_review.get("reviewBody", ""),
+                    "rating": int(json_review.get("reviewRating", {}).get("ratingValue", 0)) if json_review.get("reviewRating") else None,
+                }
+                
+                # Extract author name
+                author = json_review.get("author", {})
+                if isinstance(author, dict):
+                    review_data["username"] = author.get("name")
+                elif isinstance(author, str):
+                    review_data["username"] = author
+                
+                # Extract date if available
+                if "datePublished" in json_review:
+                    review_data["date"] = json_review["datePublished"]
+                
+                # Check for modifications in review text (using same logic as HTML reviews)
+                if review_data.get("text"):
+                    review_text = review_data["text"]
+                    
+                    # Check for negative indicators first
+                    negative_indicators = [
+                        r"mistakenly",
+                        r"was a mistake",
+                        r"didn't work",
+                        r"didn't turn out",
+                        r"wasn't good",
+                        r"won't do that",
+                        r"wouldn't recommend",
+                        r"next time.*correct",
+                        r"next time.*original",
+                        r"next time.*recipe as written",
+                        r"use.*correct ingredients",
+                        r"stick to.*original",
+                        r"follow.*recipe",
+                    ]
+                    
+                    has_negative_sentiment = any(
+                        re.search(pattern, review_text, re.IGNORECASE)
+                        for pattern in negative_indicators
+                    )
+                    
+                    if has_negative_sentiment:
+                        review_data["has_modification"] = False
+                        review_data["is_negative_example"] = True
+                    else:
+                        tweak_patterns = [
+                            r"I (added|used|substituted|replaced|made with|changed)",
+                            r"(instead of|rather than|in place of)",
+                            r"(next time|will make again|definitely make)",
+                            r"(doubled|tripled|halved|increased|decreased)",
+                            r"(more|less|extra) ([\w\s]+)",
+                        ]
+                        
+                        for pattern in tweak_patterns:
+                            if re.search(pattern, review_text, re.IGNORECASE):
+                                review_data["has_modification"] = True
+                                break
+                
+                if review_data.get("text"):
+                    recipe_data["reviews"].append(review_data)
+
+        print(f"Extracted {len(recipe_data['reviews'])} reviews ({len(reviews_from_json_ld)} from JSON-LD)")
 
         return recipe_data
 
@@ -319,7 +440,7 @@ def save_recipe_data(recipe_data: Dict, filename: str = None) -> str:
     if filename is None:
         recipe_id = recipe_data.get("recipe_id", "unknown")
         title_slug = re.sub(r"[^a-z0-9]+", "-", recipe_data.get("title", "").lower())[
-            :50
+            :MAX_TITLE_SLUG_LENGTH
         ]
         filename = f"data/recipe_{recipe_id}_{title_slug}.json"
 
@@ -331,13 +452,13 @@ def save_recipe_data(recipe_data: Dict, filename: str = None) -> str:
     filepath = filename if "/" in filename else f"data/{filename}"
 
     with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(recipe_data, f, indent=2, ensure_ascii=False)
+        json.dump(recipe_data, f, indent=JSON_INDENT_LEVEL, ensure_ascii=False)
 
     print(f"Saved recipe data to {filepath}")
     return filepath
 
 
-def scrape_sitemap_recipes(limit: int = 50) -> List[str]:
+def scrape_sitemap_recipes(limit: int = DEFAULT_SITEMAP_LIMIT) -> List[str]:
     """
     Scrape recipe URLs from AllRecipes sitemap
 
@@ -393,7 +514,7 @@ def main():
     test_url = "https://www.allrecipes.com/recipe/10813/best-chocolate-chip-cookies/"
 
     print(f"Testing with: {test_url}")
-    print("=" * 60)
+    print("=" * LOG_SEPARATOR_LENGTH)
 
     recipe_data = scrape_allrecipes(test_url)
 
@@ -417,10 +538,10 @@ def main():
         print("✗ Failed to scrape recipe")
 
     # Now try to get more recipes
-    print("\n" + "=" * 60)
+    print("\n" + "=" * LOG_SEPARATOR_LENGTH)
     print("Fetching more recipe URLs...")
 
-    recipe_urls = scrape_sitemap_recipes(limit=5)
+    recipe_urls = scrape_sitemap_recipes(limit=DEFAULT_SITEMAP_LIMIT)
     print(f"Found {len(recipe_urls)} recipe URLs to scrape")
 
     successful = 0
@@ -434,7 +555,7 @@ def main():
         else:
             print("  ✗ Failed")
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * LOG_SEPARATOR_LENGTH)
     print(f"Summary: Successfully scraped {successful}/{len(recipe_urls)} recipes")
 
 

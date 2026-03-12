@@ -11,6 +11,17 @@ from typing import List, Optional, Tuple
 
 from loguru import logger
 
+from .constants import (
+    DEFAULT_SIMILARITY_THRESHOLD,
+    VALIDATION_SIMILARITY_THRESHOLD,
+    TARGET_INGREDIENTS,
+    TARGET_INSTRUCTIONS,
+    CHANGE_TYPE_INGREDIENT,
+    CHANGE_TYPE_INSTRUCTION,
+    OPERATION_REPLACE,
+    OPERATION_ADD_AFTER,
+    OPERATION_REMOVE,
+)
 from .models import (
     ModificationObject,
     ModificationEdit,
@@ -22,7 +33,7 @@ from .models import (
 class RecipeModifier:
     """Applies structured modifications to recipes using search-and-replace operations."""
 
-    def __init__(self, similarity_threshold: float = 0.6):
+    def __init__(self, similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD):
         """
         Initialize the RecipeModifier.
 
@@ -82,7 +93,7 @@ class RecipeModifier:
 
         logger.debug(f"Applying {edit.operation} edit: find='{edit.find}'")
 
-        if edit.operation == "replace":
+        if edit.operation == OPERATION_REPLACE:
             # Find and replace text
             match, index, score = self.find_best_match(edit.find, modified_content)
 
@@ -92,17 +103,17 @@ class RecipeModifier:
                 modified_content[index] = new_text
 
                 change_records.append(ChangeRecord(
-                    type="ingredient" if edit.target == "ingredients" else "instruction",
+                    type=CHANGE_TYPE_INGREDIENT if edit.target == TARGET_INGREDIENTS else CHANGE_TYPE_INSTRUCTION,
                     from_text=original_text,
                     to_text=new_text,
-                    operation="replace"
+                    operation=OPERATION_REPLACE
                 ))
 
                 logger.info(f"Replaced '{edit.find}' with '{edit.replace}' (similarity: {score:.2f})")
             else:
                 logger.warning(f"Could not find '{edit.find}' in {edit.target} (best similarity: {score:.2f})")
 
-        elif edit.operation == "add_after":
+        elif edit.operation == OPERATION_ADD_AFTER:
             # Add new content after finding target
             match, index, score = self.find_best_match(edit.find, modified_content)
 
@@ -110,7 +121,7 @@ class RecipeModifier:
                 modified_content.insert(index + 1, edit.add)
 
                 change_records.append(ChangeRecord(
-                    type="ingredient" if edit.target == "ingredients" else "instruction",
+                    type=CHANGE_TYPE_INGREDIENT if edit.target == TARGET_INGREDIENTS else CHANGE_TYPE_INSTRUCTION,
                     from_text="",
                     to_text=edit.add,
                     operation="add"
@@ -120,7 +131,7 @@ class RecipeModifier:
             else:
                 logger.warning(f"Could not find target '{edit.find}' for addition")
 
-        elif edit.operation == "remove":
+        elif edit.operation == OPERATION_REMOVE:
             # Remove matching content
             match, index, score = self.find_best_match(edit.find, modified_content)
 
@@ -128,10 +139,10 @@ class RecipeModifier:
                 removed_text = modified_content.pop(index)
 
                 change_records.append(ChangeRecord(
-                    type="ingredient" if edit.target == "ingredients" else "instruction",
+                    type=CHANGE_TYPE_INGREDIENT if edit.target == TARGET_INGREDIENTS else CHANGE_TYPE_INSTRUCTION,
                     from_text=removed_text,
                     to_text="",
-                    operation="remove"
+                    operation=OPERATION_REMOVE
                 ))
 
                 logger.info(f"Removed '{edit.find}' (similarity: {score:.2f})")
@@ -172,11 +183,11 @@ class RecipeModifier:
 
         # Apply each edit
         for edit in modification.edits:
-            if edit.target == "ingredients":
+            if edit.target == TARGET_INGREDIENTS:
                 modified_recipe.ingredients, change_records = self.apply_edit(
                     edit, modified_recipe.ingredients
                 )
-            elif edit.target == "instructions":
+            elif edit.target == TARGET_INSTRUCTIONS:
                 modified_recipe.instructions, change_records = self.apply_edit(
                     edit, modified_recipe.instructions
                 )
@@ -238,20 +249,20 @@ class RecipeModifier:
 
         for edit in modification.edits:
             # Check if target content exists
-            target_content = recipe.ingredients if edit.target == "ingredients" else recipe.instructions
+            target_content = recipe.ingredients if edit.target == TARGET_INGREDIENTS else recipe.instructions
             match, _, score = self.find_best_match(edit.find, target_content)
 
             if not match:
                 warnings.append(f"Cannot find '{edit.find}' in {edit.target}")
                 is_safe = False
-            elif score < 0.8:
+            elif score < VALIDATION_SIMILARITY_THRESHOLD:
                 warnings.append(f"Low similarity match for '{edit.find}' (score: {score:.2f})")
 
             # Check for required fields
-            if edit.operation == "replace" and not edit.replace:
+            if edit.operation == OPERATION_REPLACE and not edit.replace:
                 warnings.append(f"Replace operation missing replacement text for '{edit.find}'")
                 is_safe = False
-            elif edit.operation == "add_after" and not edit.add:
+            elif edit.operation == OPERATION_ADD_AFTER and not edit.add:
                 warnings.append(f"Add operation missing text to add after '{edit.find}'")
                 is_safe = False
 
