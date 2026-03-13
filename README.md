@@ -333,5 +333,34 @@ I can't take a ton of credit here as the LLM did the legwork and I read through 
 
 7.) I had the LLM make a simple test suite so that we can have some semblance of things not breaking as we move forward. 
 
+# Problem analysis and solution approach
 
+1.) Analysis of the problem was fairly difficult as the goal of the application as a whole was unclear. My best guess was that we ultimately want to build something that will scrape EVERYTHING from that website. That can be pushed to a later point in time; however, because we need to get the kinks out of the individual reviews first. 
 
+2.) Understanding what is in the codebase was the first objective. I relied heavily on the LLM after some of the api contracts w/ the command line didn't make intuitive sense to me. test_pipeline all and test_pipeline one were confusing. It took a while to get a full sense of what was happening. When I fed the LLM the context of the junior engineer building the first version, it immediately picked up on the clues and I was able to get an understanding of what was there and the key goals of the application. 
+
+3.) The major goal was understandability and slight improvements. I knew I wouldn't get to do everything I would want to - I also didn't want to put too much time into a one off project that won't get continued to be enhanced. Considering the possibilities, I assumed the worse case scenario fro the application is suggesting alterations that make a recipe worse. Out of all possible issues, this is the only one that makes a user's experience subjectively WORSE.
+
+# Technical Decisions
+
+There weren't many technical decisions here. I'll list a few I think may be pertinent. 
+
+1.) Sentiment analysis to get rid of the improper substitutions problems. 
+
+2.) Refactoring some of the command line tools so they make more intuitive sense.
+
+3.) Being able to easily extract a particular recipe so that it is easier to find and test edge cases quickly. 
+
+4.) Get rid of magic numbers (just makes it easier to read code sometimes and difficult to get that wrong with an LLM)
+
+5.) Add test cases. They're probably not great and I didn't audit them, but some tests are always better than zero tests. 
+
+6.) updating of where data is stored. We don't want data or enhanced data getting into the /src folder. 
+
+# Implementation details and challenges overcome
+
+These should be littered over this document. I don't think I need to elaborate, but the key things were figuring out the original command line commands and what they were exactly doing. 
+
+# Future Improvements
+
+See next steps section.
